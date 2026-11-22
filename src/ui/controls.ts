@@ -43,20 +43,6 @@ export function applyInitialDrawerState(): void {
   });
 }
 
-function formatZoom(zoom: number): string {
-  if (zoom < 1000) {
-    return `${zoom.toFixed(2)}×`;
-  }
-  const exp = Math.floor(Math.log10(zoom));
-  const mant = zoom / Math.pow(10, exp);
-  return `${mant.toFixed(2)}×10^${exp}`;
-}
-
-function formatCoord(val: number, zoom: number): string {
-  const digits = Math.min(15, Math.max(6, Math.ceil(Math.log10(Math.max(1, zoom))) + 4));
-  return `${val >= 0 ? '+' : ''}${val.toFixed(digits)}`;
-}
-
 function formatComplexCompact(re: number, im: number): string {
   const sign = im >= 0 ? '+' : '-';
   return `${re.toFixed(4)} ${sign} ${Math.abs(im).toFixed(4)}i`;
@@ -292,7 +278,8 @@ export class HudController {
           };
           this.syncControls();
         }
-        this.camera.flyTo(bm.centerX, bm.centerY, bm.zoom, 1.25);
+        const flightDuration = bm.log10Zoom && bm.log10Zoom >= 15 ? 1.85 : 1.25;
+        this.camera.flyTo(bm.centerX, bm.centerY, bm.zoom, flightDuration, bm.log10Zoom);
         if (this.isCompactViewport()) {
           this.setDrawerOpen(false);
         }
@@ -648,10 +635,16 @@ export class HudController {
 
     this.statusDot.dataset.stage = telemetry.stage;
     this.fpsReadout.textContent = `${telemetry.fps} fps`;
-    this.zoomReadout.textContent = formatZoom(this.camera.zoom);
+    this.zoomReadout.textContent = this.camera.formatZoom();
 
-    this.precisionBadge.textContent = telemetry.useDf64 ? 'DF64' : 'FP32';
-    this.precisionBadge.dataset.df64 = String(telemetry.useDf64);
+    this.precisionBadge.dataset.precision = telemetry.precisionMode;
+    if (telemetry.precisionMode === 'perturb') {
+      this.precisionBadge.textContent = `PERTURB · ${telemetry.precisionBits}b`;
+    } else if (telemetry.precisionMode === 'df64') {
+      this.precisionBadge.textContent = 'DF64';
+    } else {
+      this.precisionBadge.textContent = 'FP32';
+    }
 
     if (telemetry.stage === 'interactive') {
       const pct = Math.round(telemetry.interactiveScale * 100);
@@ -667,8 +660,8 @@ export class HudController {
     }
 
     this.resReadout.textContent = `${telemetry.activeWidth}×${telemetry.activeHeight}`;
-    this.coordRe.textContent = formatCoord(this.camera.centerX, this.camera.zoom);
-    this.coordIm.textContent = formatCoord(this.camera.centerY, this.camera.zoom);
+    this.coordRe.textContent = this.camera.formatCenterX(24);
+    this.coordIm.textContent = this.camera.formatCenterY(24);
     this.gpuName.textContent = telemetry.gpuName;
 
     if (this.activeFractal.hasJuliaParam && (this.julia.animateOrbit || this.julia.transition)) {

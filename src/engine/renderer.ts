@@ -1,4 +1,10 @@
-import { CameraController, splitDouble } from './camera';
+import {
+  bigFromDecimal,
+  computeBestReferenceOrbit,
+  extendReferenceOrbit,
+  ReferenceOrbit,
+} from './bigfixed';
+import { CameraController, PrecisionMode, splitDouble } from './camera';
 import { assembleComputeShader, FractalDefinition } from './fractals';
 import { EvaluatedGradient, GradientState } from './palettes';
 import displayWgsl from './shaders/display.wgsl?raw';
@@ -28,7 +34,8 @@ export interface RenderTelemetry {
   currentIter: number;
   targetIter: number;
   progress: number; // 0..1
-  useDf64: boolean;
+  precisionMode: PrecisionMode;
+  precisionBits: number;
   gpuName: string;
 }
 
@@ -45,8 +52,10 @@ const SUBPIXEL_OFFSETS: readonly [number, number][] = [
 ];
 
 const SETTLE_DELAY_MS = 95;
-const COMPUTE_UNIFORM_SIZE = 96; // 6 * vec4 (f32/u32)
+const COMPUTE_UNIFORM_SIZE = 128; // 8 * vec4 (f32/u32/i32)
 const DISPLAY_UNIFORM_SIZE = 304; // 3 * vec4 + 8 * vec4 + 8 * vec4
+const MAX_PERTURB_ITER = 24576;
+const REF_ORBIT_BUFFER_BYTES = (MAX_PERTURB_ITER + 2) * 8; // vec2<f32> per step
 
 interface ComputePipelinePair {
   interactive: GPUComputePipeline;
@@ -69,6 +78,7 @@ export class FractalRenderer {
 
   private computeUniformBuffer!: GPUBuffer;
   private displayUniformBuffer!: GPUBuffer;
+  private refOrbitBuffer!: GPUBuffer;
 
   private samples0Buffer: GPUBuffer | null = null;
   private samples1Buffer: GPUBuffer | null = null;
@@ -81,6 +91,11 @@ export class FractalRenderer {
   private computeUniformRaw = new ArrayBuffer(COMPUTE_UNIFORM_SIZE);
   private computeUniformF32 = new Float32Array(this.computeUniformRaw);
   private computeUniformU32 = new Uint32Array(this.computeUniformRaw);
+  private computeUniformI32 = new Int32Array(this.computeUniformRaw);
+
+  private refOrbit: ReferenceOrbit | null = null;
+  private refOrbitJuliaRe = 0;
+  private refOrbitJuliaIm = 0;
 
   private displayUniformRaw = new ArrayBuffer(DISPLAY_UNIFORM_SIZE);
   private displayUniformF32 = new Float32Array(this.displayUniformRaw);
@@ -220,6 +235,12 @@ export class FractalRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    this.refOrbitBuffer = this.device.createBuffer({
+      label: 'perturb-ref-orbit',
+      size: REF_ORBIT_BUFFER_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
     this.computeBindGroupLayout = this.device.createBindGroupLayout({
       label: 'compute-bgl',
       entries: [
@@ -228,6 +249,7 @@ export class FractalRenderer {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -250,11 +272,13 @@ export class FractalRenderer {
     this.stateMetaBuffer?.destroy();
     this.computeUniformBuffer?.destroy();
     this.displayUniformBuffer?.destroy();
+    this.refOrbitBuffer?.destroy();
     this.device?.destroy();
   }
 
   public async setFractal(fractal: FractalDefinition): Promise<void> {
     this.fractal = fractal;
+    this.refOrbit = null;
     await this.buildComputePipelines(fractal);
     this.rebuildBindGroups();
     this.invalidate();
@@ -456,6 +480,7 @@ export class FractalRenderer {
         { binding: 2, resource: { buffer: this.samples1Buffer } },
         { binding: 3, resource: { buffer: this.stateZBuffer } },
         { binding: 4, resource: { buffer: this.stateMetaBuffer } },
+        { binding: 5, resource: { buffer: this.refOrbitBuffer } },
       ],
     });
 
@@ -470,15 +495,97 @@ export class FractalRenderer {
     });
   }
 
-  private computeTargetStationaryIter(zoom: number): number {
-    const zoomSuggested = Math.round(512 + 380 * Math.log10(Math.max(1, zoom)));
-    return Math.min(8192, Math.max(this.settings.baseStationaryIter, zoomSuggested));
+  private computeTargetStationaryIter(log10Zoom: number): number {
+    const zoomSuggested = Math.round(512 + 380 * Math.max(0, log10Zoom));
+    return Math.min(MAX_PERTURB_ITER, Math.max(this.settings.baseStationaryIter, zoomSuggested));
   }
 
-  private computeInteractiveIter(zoom: number, useDf64: boolean): number {
-    const suggested = Math.round(140 + 80 * Math.log10(Math.max(1, zoom)));
-    const cap = useDf64 ? 380 : 560;
+  private computeInteractiveIter(log10Zoom: number, mode: PrecisionMode): number {
+    if (mode === 'perturb') {
+      return Math.min(1200, Math.max(220, Math.round(180 + 38 * Math.max(0, log10Zoom))));
+    }
+    const suggested = Math.round(140 + 80 * Math.max(0, log10Zoom));
+    const cap = mode === 'df64' ? 380 : 560;
     return Math.min(cap, Math.max(140, suggested));
+  }
+
+  private ensureReferenceOrbit(
+    camera: CameraController,
+    neededIter: number,
+    juliaC: [number, number],
+  ): { offsetX: number; offsetY: number; scaleExp: number; scaledHeight: number; refLen: number } {
+    const { scaledHeight, scaleExp } = camera.getScaledHeight();
+    const clampedIter = Math.min(MAX_PERTURB_ITER, Math.max(256, neededIter));
+    const isJulia = this.fractal.hasJuliaParam;
+
+    let needRecompute = !this.refOrbit;
+    if (this.refOrbit) {
+      if (this.refOrbit.fractalId !== this.fractal.id) {
+        needRecompute = true;
+      } else if (this.refOrbit.bits < camera.precisionBits) {
+        needRecompute = true;
+      } else if (
+        isJulia &&
+        (this.refOrbitJuliaRe !== juliaC[0] || this.refOrbitJuliaIm !== juliaC[1])
+      ) {
+        needRecompute = true;
+      } else {
+        const [ox, oy] = camera.offsetFromReference(
+          this.refOrbit.refX,
+          this.refOrbit.refY,
+          scaleExp,
+        );
+        if (!Number.isFinite(ox) || !Number.isFinite(oy) || Math.hypot(ox, oy) > 3.5) {
+          needRecompute = true;
+        }
+      }
+    }
+
+    if (needRecompute) {
+      const juliaBig: [ReturnType<typeof bigFromDecimal>, ReturnType<typeof bigFromDecimal>] | undefined =
+        isJulia
+          ? [
+              bigFromDecimal(String(juliaC[0]), camera.precisionBits),
+              bigFromDecimal(String(juliaC[1]), camera.precisionBits),
+            ]
+          : undefined;
+
+      this.refOrbit = computeBestReferenceOrbit(
+        camera.centerXBig,
+        camera.centerYBig,
+        scaleExp,
+        clampedIter,
+        this.fractal.id,
+        juliaBig,
+      );
+      this.refOrbitJuliaRe = juliaC[0];
+      this.refOrbitJuliaIm = juliaC[1];
+      this.uploadReferenceOrbit(this.refOrbit);
+    } else if (this.refOrbit && !this.refOrbit.escaped && this.refOrbit.length < clampedIter) {
+      this.refOrbit = extendReferenceOrbit(this.refOrbit, clampedIter);
+      this.uploadReferenceOrbit(this.refOrbit);
+    }
+
+    const orbit = this.refOrbit!;
+    const [offsetX, offsetY] = camera.offsetFromReference(orbit.refX, orbit.refY, scaleExp);
+    return {
+      offsetX,
+      offsetY,
+      scaleExp,
+      scaledHeight,
+      refLen: Math.max(1, orbit.length),
+    };
+  }
+
+  private uploadReferenceOrbit(orbit: ReferenceOrbit): void {
+    const byteLength = Math.min(REF_ORBIT_BUFFER_BYTES, orbit.orbitData.byteLength);
+    this.device.queue.writeBuffer(
+      this.refOrbitBuffer,
+      0,
+      orbit.orbitData.buffer,
+      orbit.orbitData.byteOffset,
+      byteLength,
+    );
   }
 
   private getEffectiveInteractiveScale(): number {
@@ -500,10 +607,20 @@ export class FractalRenderer {
     sampleIndex: number,
     isFirstChunk: boolean,
     juliaC: [number, number],
+    perturbInfo: {
+      offsetX: number;
+      offsetY: number;
+      scaleExp: number;
+      scaledHeight: number;
+      refLen: number;
+    } | null,
   ): void {
-    const [cxHi, cxLo] = splitDouble(camera.centerX);
-    const [cyHi, cyLo] = splitDouble(camera.centerY);
-    const step = camera.complexHeight / Math.max(1, height);
+    const mode = camera.precisionMode;
+    const precCode = mode === 'perturb' ? 2 : mode === 'df64' ? 1 : 0;
+
+    const [cxHi, cxLo] = mode === 'perturb' ? [0, 0] : splitDouble(camera.centerX);
+    const [cyHi, cyLo] = mode === 'perturb' ? [0, 0] : splitDouble(camera.centerY);
+    const step = mode === 'perturb' ? 0 : camera.complexHeight / Math.max(1, height);
     const [stepHi, stepLo] = splitDouble(step);
     const bailout2 = this.fractal.bailoutRadius * this.fractal.bailoutRadius;
     const [jReHi, jReLo] = splitDouble(juliaC[0]);
@@ -511,42 +628,66 @@ export class FractalRenderer {
 
     const f = this.computeUniformF32;
     const u = this.computeUniformU32;
+    const i32 = this.computeUniformI32;
 
-    // center: vec4<f32>
+    // 0: center: vec4<f32>
     f[0] = cxHi;
     f[1] = cxLo;
     f[2] = cyHi;
     f[3] = cyLo;
 
-    // scale: vec4<f32> (step_hi, step_lo, bailout2, df_one = 1.0)
+    // 1: scale: vec4<f32> (step_hi, step_lo, bailout2, df_one = 1.0)
     f[4] = stepHi;
     f[5] = stepLo;
     f[6] = bailout2;
     f[7] = 1.0;
 
-    // viewport: vec4<f32>
+    // 2: viewport: vec4<f32>
     f[8] = width;
     f[9] = height;
     f[10] = jitterX;
     f[11] = jitterY;
 
-    // iter_params: vec4<u32>
+    // 3: iter_params: vec4<u32>
     u[12] = startIter >>> 0;
     u[13] = chunkIter >>> 0;
     u[14] = maxIter >>> 0;
     u[15] = sampleIndex >>> 0;
 
-    // mode_params: vec4<u32>
-    u[16] = camera.useDf64 ? 1 : 0;
+    // 4: mode_params: vec4<u32> (precCode, isFirstChunk, activeStride, isJulia)
+    u[16] = precCode >>> 0;
     u[17] = isFirstChunk ? 1 : 0;
     u[18] = width >>> 0;
-    u[19] = 0;
+    u[19] = this.fractal.hasJuliaParam ? 1 : 0;
 
-    // julia_c: vec4<f32>
+    // 5: julia_c: vec4<f32>
     f[20] = jReHi;
     f[21] = jReLo;
     f[22] = jImHi;
     f[23] = jImLo;
+
+    // 6: perturb_offset: vec4<f32> (offset_x, offset_y, step_scaled, 0)
+    if (perturbInfo) {
+      f[24] = perturbInfo.offsetX;
+      f[25] = perturbInfo.offsetY;
+      f[26] = perturbInfo.scaledHeight / Math.max(1, height);
+      f[27] = 0;
+
+      // 7: perturb_meta: vec4<i32> (ref_len, scale_exp, 0, 0)
+      i32[28] = perturbInfo.refLen | 0;
+      i32[29] = perturbInfo.scaleExp | 0;
+      i32[30] = 0;
+      i32[31] = 0;
+    } else {
+      f[24] = 0;
+      f[25] = 0;
+      f[26] = 0;
+      f[27] = 0;
+      i32[28] = 1;
+      i32[29] = 0;
+      i32[30] = 0;
+      i32[31] = 0;
+    }
 
     this.device.queue.writeBuffer(this.computeUniformBuffer, 0, this.computeUniformRaw);
   }
@@ -601,7 +742,8 @@ export class FractalRenderer {
 
     const movedThisFrame = camera.consumeDirty() || this.needsInitialCompute;
     const msSinceMove = camera.msSinceLastMove(now);
-    const useDf64 = camera.useDf64;
+    const precMode = camera.precisionMode;
+    const log10Zoom = camera.log10Zoom;
 
     const shouldValidate = !this.firstFrameValidated;
     if (shouldValidate) {
@@ -634,7 +776,12 @@ export class FractalRenderer {
       this.activeHeight = fastH;
       this.upscaleBilinear = fastW < this.fullWidth || fastH < this.fullHeight;
 
-      this.currentInteractiveIter = this.computeInteractiveIter(camera.zoom, useDf64);
+      this.currentInteractiveIter = this.computeInteractiveIter(log10Zoom, precMode);
+
+      const perturbInfo =
+        precMode === 'perturb'
+          ? this.ensureReferenceOrbit(camera, this.currentInteractiveIter, juliaC)
+          : null;
 
       this.writeComputeUniforms(
         camera,
@@ -648,6 +795,7 @@ export class FractalRenderer {
         0,
         true,
         juliaC,
+        perturbInfo,
       );
 
       if (this.computeBindGroup) {
@@ -662,19 +810,24 @@ export class FractalRenderer {
       this.stage = 'refining';
       this.emaRefineMs = this.emaRefineMs * 0.8 + dtMs * 0.2;
 
-      this.currentTargetIter = this.computeTargetStationaryIter(camera.zoom);
+      this.currentTargetIter = this.computeTargetStationaryIter(log10Zoom);
       const targetSSAA = this.settings.targetSSAA;
 
       // Keep each compute slice comfortably within the 60Hz budget so color cycling stays fluid
-      let chunkIter = useDf64 ? 96 : 256;
+      let chunkIter = precMode === 'df64' ? 96 : precMode === 'perturb' ? 512 : 256;
       if (this.emaRefineMs > 19.0) {
         chunkIter = Math.max(32, Math.floor(chunkIter * 0.5));
-      } else if (this.emaRefineMs < 12.5 && !useDf64) {
-        chunkIter = 384;
+      } else if (this.emaRefineMs < 12.5 && precMode !== 'df64') {
+        chunkIter = precMode === 'perturb' ? 768 : 384;
       }
 
       const isFirstChunk = this.refineIter === 0;
       const [jx, jy] = SUBPIXEL_OFFSETS[this.refineSampleIdx % SUBPIXEL_OFFSETS.length];
+
+      const perturbInfo =
+        precMode === 'perturb'
+          ? this.ensureReferenceOrbit(camera, this.currentTargetIter, juliaC)
+          : null;
 
       this.writeComputeUniforms(
         camera,
@@ -688,6 +841,7 @@ export class FractalRenderer {
         this.refineSampleIdx,
         isFirstChunk,
         juliaC,
+        perturbInfo,
       );
 
       if (this.computeBindGroup) {
@@ -763,7 +917,8 @@ export class FractalRenderer {
               : this.refineIter,
       targetIter: this.currentTargetIter,
       progress,
-      useDf64,
+      precisionMode: precMode,
+      precisionBits: precMode === 'perturb' ? camera.precisionBits : precMode === 'df64' ? 48 : 32,
       gpuName: this.gpuName,
     };
   }

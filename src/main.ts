@@ -1,4 +1,5 @@
 import './style.css';
+import { bigToNumber } from './engine/bigfixed';
 import { CameraController } from './engine/camera';
 import {
   createDefaultJuliaState,
@@ -51,9 +52,10 @@ async function bootstrap(): Promise<void> {
     params.get('fractal') ?? matchedBm?.fractalId ?? 'mandelbrot',
   );
 
-  let startX = matchedBm?.centerX ?? activeFractal.defaultCenter[0];
-  let startY = matchedBm?.centerY ?? activeFractal.defaultCenter[1];
+  let startX: number | string = matchedBm?.centerX ?? activeFractal.defaultCenter[0];
+  let startY: number | string = matchedBm?.centerY ?? activeFractal.defaultCenter[1];
   let startZoom = matchedBm?.zoom ?? activeFractal.defaultZoom;
+  let startLog10Zoom: number | undefined = matchedBm?.log10Zoom;
 
   if (matchedBm?.juliaC) {
     julia.re = matchedBm.juliaC[0];
@@ -61,12 +63,14 @@ async function bootstrap(): Promise<void> {
     julia.orbitAngle = Math.atan2(julia.im, julia.re);
   }
 
-  const xParam = Number(params.get('x'));
-  const yParam = Number(params.get('y'));
+  const xRaw = params.get('x');
+  const yRaw = params.get('y');
   const zParam = Number(params.get('z'));
-  if (params.has('x') && Number.isFinite(xParam)) startX = xParam;
-  if (params.has('y') && Number.isFinite(yParam)) startY = yParam;
+  const logzParam = Number(params.get('logz'));
+  if (xRaw && /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i.test(xRaw.trim())) startX = xRaw.trim();
+  if (yRaw && /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i.test(yRaw.trim())) startY = yRaw.trim();
   if (params.has('z') && Number.isFinite(zParam) && zParam > 0) startZoom = zParam;
+  if (params.has('logz') && Number.isFinite(logzParam)) startLog10Zoom = logzParam;
 
   const creParam = Number(params.get('cre'));
   const cimParam = Number(params.get('cim'));
@@ -78,6 +82,7 @@ async function bootstrap(): Promise<void> {
     centerX: startX,
     centerY: startY,
     zoom: startZoom,
+    log10Zoom: startLog10Zoom,
   });
 
   const gradient = createDefaultGradientState();
@@ -154,10 +159,13 @@ async function bootstrap(): Promise<void> {
     // Alt+Click on Mandelbrot opens the corresponding Julia set for that exact c coordinate
     if (e.altKey && activeFractal.id === 'mandelbrot') {
       const rect = canvas.getBoundingClientRect();
-      const step = camera.complexHeight / Math.max(1, rect.height);
-      const pickedRe = camera.centerX + (e.clientX - rect.left - rect.width * 0.5) * step;
-      const pickedIm = camera.centerY + (rect.height * 0.5 - (e.clientY - rect.top)) * step;
-      void exploreJuliaAt(pickedRe, pickedIm);
+      const [pickedReBig, pickedImBig] = camera.pixelToComplexBig(
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        rect.width,
+        rect.height,
+      );
+      void exploreJuliaAt(bigToNumber(pickedReBig), bigToNumber(pickedImBig));
       return;
     }
 
@@ -257,11 +265,14 @@ async function bootstrap(): Promise<void> {
   // Double-click to smoothly fly-zoom into the clicked point (Shift to zoom out)
   canvas.addEventListener('dblclick', (e) => {
     const rect = canvas.getBoundingClientRect();
-    const step = camera.complexHeight / Math.max(1, rect.height);
-    const targetRe = camera.centerX + (e.clientX - rect.left - rect.width * 0.5) * step;
-    const targetIm = camera.centerY + (rect.height * 0.5 - (e.clientY - rect.top)) * step;
-    const nextZoom = e.shiftKey ? camera.zoom / 3.5 : camera.zoom * 4.0;
-    camera.flyTo(targetRe, targetIm, nextZoom, 0.75);
+    const [targetRe, targetIm] = camera.pixelToComplexBig(
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+      rect.width,
+      rect.height,
+    );
+    const nextLog10 = camera.log10Zoom + (e.shiftKey ? -Math.log10(3.5) : Math.log10(4.0));
+    camera.flyTo(targetRe, targetIm, 1, 0.75, nextLog10);
   });
 
   // Keyboard shortcuts

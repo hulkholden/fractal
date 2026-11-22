@@ -202,10 +202,16 @@ body {
   color: var(--accent);
 }
 
-.badge[data-df64='true'] {
+.badge[data-precision='df64'] {
   background: rgba(167, 139, 250, 0.2);
   border-color: rgba(167, 139, 250, 0.45);
   color: #c4b5fd;
+}
+
+.badge[data-precision='perturb'] {
+  background: rgba(251, 191, 36, 0.2);
+  border-color: rgba(251, 191, 36, 0.5);
+  color: #fde68a;
 }
 
 .fps-readout {

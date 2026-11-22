@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fractal · WebGPU Realtime Explorer</title>
+  </head>
+  <body>
+    <main class="viewport" aria-label="Interactive WebGPU fractal canvas">
+      <canvas id="fractal-canvas" tabindex="0" aria-label="Mandelbrot fractal visualization"></canvas>
+
+      <!-- Fallback banner if WebGPU is unavailable -->
+      <section id="error-overlay" class="error-overlay" hidden role="alert">
+        <div class="error-card">
+          <h1>WebGPU Required</h1>
+          <p id="error-message">Unable to initialize WebGPU in this browser.</p>
+          <p class="error-hint">
+            Use a recent version of Chrome, Edge, or Safari with WebGPU enabled and hardware acceleration active.
+          </p>
+        </div>
+      </section>
+
+      <!-- Top-left minimal telemetry pill -->
+      <header id="hud-status" class="hud-pill hud-top-left" aria-live="polite">
+        <div class="brand-row">
+          <span class="status-dot" id="status-dot" data-stage="interactive" aria-hidden="true"></span>
+          <span class="brand-title" id="fractal-title">Mandelbrot</span>
+          <span class="badge badge-precision" id="precision-badge" title="Floating-point precision mode">FP32</span>
+          <span class="fps-readout" id="fps-readout">60 fps</span>
+        </div>
+        <div class="telemetry-row">
+          <span id="stage-label">Interactive · 0.75×</span>
+          <span class="sep" aria-hidden="true">·</span>
+          <span id="zoom-readout">1.00×</span>
+        </div>
+        <div class="refine-bar" aria-hidden="true">
+          <div class="refine-bar-fill" id="refine-bar-fill"></div>
+        </div>
+      </header>
+
+      <!-- Top-right quick toolbar -->
+      <div id="hud-actions" class="hud-top-right">
+        <button
+          type="button"
+          id="btn-play-pause"
+          class="icon-btn"
+          title="Pause or resume color cycling (Space)"
+          aria-pressed="true"
+        >
+          <span id="play-pause-icon" aria-hidden="true">❚❚</span>
+          <span class="btn-label">Flow</span>
+        </button>
+
+        <button
+          type="button"
+          id="btn-reset"
+          class="icon-btn"
+          title="Reset camera view (R)"
+        >
+          <span aria-hidden="true">↺</span>
+          <span class="btn-label">Reset</span>
+        </button>
+
+        <button
+          type="button"
+          id="btn-snapshot"
+          class="icon-btn"
+          title="Save high-resolution PNG snapshot"
+        >
+          <span aria-hidden="true">⤓</span>
+          <span class="btn-label">PNG</span>
+        </button>
+
+        <button
+          type="button"
+          id="btn-shortcuts"
+          class="icon-btn"
+          commandfor="shortcuts-popover"
+          command="toggle-popover"
+          title="Controls & keyboard shortcuts"
+          aria-label="Controls and keyboard shortcuts"
+        >
+          <span aria-hidden="true">?</span>
+        </button>
+
+        <button
+          type="button"
+          id="btn-toggle-panel"
+          class="icon-btn icon-btn-primary"
+          aria-expanded="true"
+          aria-controls="control-drawer"
+          title="Toggle controls panel (H hides all HUD)"
+        >
+          <span aria-hidden="true">☰</span>
+          <span class="btn-label">Controls</span>
+        </button>
+      </div>
+
+      <!-- Declarative Popover for Keyboard & Mouse Controls -->
+      <div id="shortcuts-popover" class="shortcuts-popover" popover>
+        <div class="popover-header">
+          <h2>Controls &amp; Shortcuts</h2>
+          <button
+            type="button"
+            class="popover-close"
+            commandfor="shortcuts-popover"
+            command="hide-popover"
+            aria-label="Close shortcuts"
+          >
+            ✕
+          </button>
+        </div>
+        <dl class="shortcut-list">
+          <div><dt>Drag</dt><dd>Pan viewport (60Hz adaptive)</dd></div>
+          <div><dt>Scroll / Pinch</dt><dd>Zoom smoothly toward cursor</dd></div>
+          <div><dt>Double-click</dt><dd>Fly-zoom in (Shift: zoom out)</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>Pause / resume color cycling</dd></div>
+          <div><dt><kbd>M</kbd></dt><dd>Toggle Living Gradient morph</dd></div>
+          <div><dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Switch gradient palette</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>Reset view to full set</dd></div>
+          <div><dt><kbd>H</kbd></dt><dd>Hide / show entire HUD</dd></div>
+        </dl>
+        <p class="popover-note">
+          Stop moving to automatically refine to full HiDPI resolution, deep iterations, and 8× supersampling while colors stay at 60Hz.
+        </p>
+      </div>
+
+      <!-- Collapsible Right-Side Controls Drawer -->
+      <aside id="control-drawer" class="control-drawer" aria-label="Fractal settings">
+        <!-- Fractal Selector (extensible for future fractal types) -->
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>Fractal</h2>
+            <span class="formula-tag" id="fractal-formula">zₙ₊₁ = zₙ² + c</span>
+          </div>
+          <label class="sr-only" for="select-fractal">Fractal type</label>
+          <select id="select-fractal" class="select-input"></select>
+        </section>
+
+        <!-- Smooth Ever-Changing Gradients -->
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>Living Gradient</h2>
+            <span class="palette-active-name" id="palette-active-name">Ultra Classic</span>
+          </div>
+
+          <div class="gradient-preview-bar" id="gradient-preview-bar" aria-hidden="true"></div>
+
+          <div class="palette-grid" id="palette-grid" role="group" aria-label="Color palettes"></div>
+
+          <label class="checkbox-row" for="toggle-living-morph">
+            <input type="checkbox" id="toggle-living-morph" class="visually-hidden-fallback" checked />
+            <span>Ever-changing morph &amp; hue drift</span>
+          </label>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <label for="slider-flow-speed">Flow Speed</label>
+              <output id="out-flow-speed" for="slider-flow-speed">0.09×</output>
+            </div>
+            <input
+              type="range"
+              id="slider-flow-speed"
+              min="-0.35"
+              max="0.35"
+              step="0.005"
+              value="0.085"
+            />
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <label for="slider-density">Color Density</label>
+              <output id="out-density" for="slider-density">1.00×</output>
+            </div>
+            <input
+              type="range"
+              id="slider-density"
+              min="0.25"
+              max="2.8"
+              step="0.05"
+              value="1.0"
+            />
+          </div>
+        </section>
+
+        <!-- Progressive Quality & 60Hz Performance -->
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>Quality &amp; 60Hz</h2>
+            <span class="detail-meta" id="res-readout">—</span>
+          </div>
+
+          <div class="segmented-group">
+            <span class="field-label">Stationary Antialiasing</span>
+            <div class="segmented-buttons" role="group" aria-label="Stationary supersampling">
+              <button type="button" class="seg-btn" data-ssaa="1">1×</button>
+              <button type="button" class="seg-btn" data-ssaa="4">4× SSAA</button>
+              <button type="button" class="seg-btn active" data-ssaa="8">8× SSAA</button>
+            </div>
+          </div>
+
+          <div class="segmented-group">
+            <span class="field-label">Stationary Detail</span>
+            <div class="segmented-buttons" role="group" aria-label="Base iteration depth">
+              <button type="button" class="seg-btn" data-iter="512">512</button>
+              <button type="button" class="seg-btn active" data-iter="1536">1536</button>
+              <button type="button" class="seg-btn" data-iter="3072">3072</button>
+              <button type="button" class="seg-btn" data-iter="6144">6144</button>
+            </div>
+          </div>
+
+          <div class="segmented-group">
+            <span class="field-label">Pan / Zoom Resolution</span>
+            <div class="segmented-buttons" role="group" aria-label="Interactive resolution scale">
+              <button type="button" class="seg-btn active" data-scale="auto">Auto 60Hz</button>
+              <button type="button" class="seg-btn" data-scale="0.5">0.5×</button>
+              <button type="button" class="seg-btn" data-scale="0.75">0.75×</button>
+              <button type="button" class="seg-btn" data-scale="1">1×</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Curated Bookmarks -->
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>Destinations</h2>
+            <span class="detail-meta">Click to fly</span>
+          </div>
+          <div class="bookmark-list" id="bookmark-list"></div>
+        </section>
+
+        <!-- Coordinates Footer -->
+        <footer class="coords-footer">
+          <div class="coord-line"><span>Re</span><code id="coord-re">-0.5500000000</code></div>
+          <div class="coord-line"><span>Im</span><code id="coord-im">+0.0000000000</code></div>
+          <div class="coord-line"><span>GPU</span><code id="gpu-name">WebGPU</code></div>
+        </footer>
+      </aside>
+
+      <!-- Subtle bottom-left hint when HUD is hidden -->
+      <div id="hud-hidden-hint" class="hud-hidden-hint" hidden>
+        Press <kbd>H</kbd> to show HUD
+      </div>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

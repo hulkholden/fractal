@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Fractal · WebGPU Realtime Explorer</title>
   </head>
   <body>
@@ -20,80 +20,87 @@
         </div>
       </section>
 
-      <!-- Top-left minimal telemetry pill -->
-      <header id="hud-status" class="hud-pill hud-top-left" aria-live="polite">
-        <div class="brand-row">
-          <span class="status-dot" id="status-dot" data-stage="interactive" aria-hidden="true"></span>
-          <span class="brand-title" id="fractal-title">Mandelbrot</span>
-          <span class="badge badge-precision" id="precision-badge" title="Floating-point precision mode">FP32</span>
-          <span class="fps-readout" id="fps-readout">60 fps</span>
+      <!-- Top HUD bar: prevents left telemetry pill & right actions from overlapping -->
+      <div class="hud-top-bar">
+        <!-- Top-left minimal telemetry pill -->
+        <header id="hud-status" class="hud-pill hud-top-left" aria-live="polite">
+          <div class="brand-row">
+            <span class="status-dot" id="status-dot" data-stage="interactive" aria-hidden="true"></span>
+            <span class="brand-title" id="fractal-title">Mandelbrot</span>
+            <span class="badge badge-precision" id="precision-badge" title="Floating-point precision mode">FP32</span>
+            <span class="fps-readout" id="fps-readout">60 fps</span>
+          </div>
+          <div class="telemetry-row">
+            <span id="stage-label">Interactive · 0.75×</span>
+            <span class="sep" aria-hidden="true">·</span>
+            <span id="zoom-readout">1.00×</span>
+          </div>
+          <div class="refine-bar" aria-hidden="true">
+            <div class="refine-bar-fill" id="refine-bar-fill"></div>
+          </div>
+        </header>
+
+        <!-- Top-right quick toolbar -->
+        <div id="hud-actions" class="hud-top-right">
+          <button
+            type="button"
+            id="btn-play-pause"
+            class="icon-btn"
+            title="Pause or resume color cycling (Space)"
+            aria-label="Pause or resume color cycling"
+            aria-pressed="true"
+          >
+            <span id="play-pause-icon" aria-hidden="true">❚❚</span>
+            <span class="btn-label">Flow</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-reset"
+            class="icon-btn hud-compact-hide"
+            title="Reset camera view (R)"
+            aria-label="Reset camera view"
+          >
+            <span aria-hidden="true">↺</span>
+            <span class="btn-label">Reset</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-snapshot"
+            class="icon-btn hud-secondary-btn"
+            title="Save high-resolution PNG snapshot"
+            aria-label="Save high-resolution PNG snapshot"
+          >
+            <span aria-hidden="true">⤓</span>
+            <span class="btn-label">PNG</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-shortcuts"
+            class="icon-btn hud-secondary-btn"
+            commandfor="shortcuts-popover"
+            command="toggle-popover"
+            title="Controls & keyboard shortcuts"
+            aria-label="Controls and keyboard shortcuts"
+          >
+            <span aria-hidden="true">?</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-toggle-panel"
+            class="icon-btn icon-btn-primary"
+            aria-expanded="true"
+            aria-controls="control-drawer"
+            aria-label="Hide controls panel"
+            title="Toggle controls panel (H hides all HUD)"
+          >
+            <span id="toggle-panel-icon" aria-hidden="true">✕</span>
+            <span id="toggle-panel-label" class="btn-label btn-label-always">Hide</span>
+          </button>
         </div>
-        <div class="telemetry-row">
-          <span id="stage-label">Interactive · 0.75×</span>
-          <span class="sep" aria-hidden="true">·</span>
-          <span id="zoom-readout">1.00×</span>
-        </div>
-        <div class="refine-bar" aria-hidden="true">
-          <div class="refine-bar-fill" id="refine-bar-fill"></div>
-        </div>
-      </header>
-
-      <!-- Top-right quick toolbar -->
-      <div id="hud-actions" class="hud-top-right">
-        <button
-          type="button"
-          id="btn-play-pause"
-          class="icon-btn"
-          title="Pause or resume color cycling (Space)"
-          aria-pressed="true"
-        >
-          <span id="play-pause-icon" aria-hidden="true">❚❚</span>
-          <span class="btn-label">Flow</span>
-        </button>
-
-        <button
-          type="button"
-          id="btn-reset"
-          class="icon-btn"
-          title="Reset camera view (R)"
-        >
-          <span aria-hidden="true">↺</span>
-          <span class="btn-label">Reset</span>
-        </button>
-
-        <button
-          type="button"
-          id="btn-snapshot"
-          class="icon-btn"
-          title="Save high-resolution PNG snapshot"
-        >
-          <span aria-hidden="true">⤓</span>
-          <span class="btn-label">PNG</span>
-        </button>
-
-        <button
-          type="button"
-          id="btn-shortcuts"
-          class="icon-btn"
-          commandfor="shortcuts-popover"
-          command="toggle-popover"
-          title="Controls & keyboard shortcuts"
-          aria-label="Controls and keyboard shortcuts"
-        >
-          <span aria-hidden="true">?</span>
-        </button>
-
-        <button
-          type="button"
-          id="btn-toggle-panel"
-          class="icon-btn icon-btn-primary"
-          aria-expanded="true"
-          aria-controls="control-drawer"
-          title="Toggle controls panel (H hides all HUD)"
-        >
-          <span aria-hidden="true">☰</span>
-          <span class="btn-label">Controls</span>
-        </button>
       </div>
 
       <!-- Declarative Popover for Keyboard & Mouse Controls -->
@@ -127,8 +134,47 @@
         </p>
       </div>
 
-      <!-- Collapsible Right-Side Controls Drawer -->
+      <!-- Collapsible Right-Side Controls Drawer (Bottom Sheet on Mobile) -->
       <aside id="control-drawer" class="control-drawer" aria-label="Fractal settings">
+        <div class="drawer-header" id="drawer-header">
+          <div class="drawer-drag-handle" aria-hidden="true"></div>
+          <div class="drawer-title-row">
+            <span class="drawer-title">Settings</span>
+            <button
+              type="button"
+              id="btn-close-panel"
+              class="drawer-close-btn"
+              aria-label="Hide controls"
+              title="Hide controls"
+            >
+              <span class="drawer-close-label">Hide</span>
+              <span aria-hidden="true">✕</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Mobile-only quick actions moved out of the compact top bar -->
+        <div class="drawer-quick-actions" role="group" aria-label="Quick actions">
+          <button type="button" id="btn-drawer-reset" class="drawer-quick-btn">
+            <span aria-hidden="true">↺</span>
+            <span>Reset</span>
+          </button>
+          <button type="button" id="btn-drawer-snapshot" class="drawer-quick-btn">
+            <span aria-hidden="true">⤓</span>
+            <span>Save PNG</span>
+          </button>
+          <button
+            type="button"
+            id="btn-drawer-shortcuts"
+            class="drawer-quick-btn"
+            commandfor="shortcuts-popover"
+            command="toggle-popover"
+          >
+            <span aria-hidden="true">?</span>
+            <span>Help</span>
+          </button>
+        </div>
+
         <!-- Fractal Selector -->
         <section class="panel-section">
           <div class="section-header">

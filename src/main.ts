@@ -9,7 +9,7 @@ import {
 import { createDefaultGradientState, PALETTES, stepGradient } from './engine/palettes';
 import { FractalRenderer } from './engine/renderer';
 import { BOOKMARKS } from './ui/bookmarks';
-import { HudController } from './ui/controls';
+import { applyInitialDrawerState, HudController } from './ui/controls';
 
 // Conditionally polyfill modern Popover & Invoker Commands APIs only when natively absent
 if (!Object.hasOwn(HTMLElement.prototype, 'popover')) {
@@ -36,6 +36,8 @@ window.addEventListener('error', (e) => showError(`[Error] ${e.message}`));
 window.addEventListener('unhandledrejection', (e) => showError(`[Rejection] ${String(e.reason)}`));
 
 async function bootstrap(): Promise<void> {
+  applyInitialDrawerState();
+
   const canvas = document.getElementById('fractal-canvas') as HTMLCanvasElement | null;
   if (!canvas) return;
 
@@ -145,6 +147,8 @@ async function bootstrap(): Promise<void> {
   // --- Pointer & Touch Interaction (60Hz Pan + Cursor-Anchored Zoom) ---
   const activePointers = new Map<number, { x: number; y: number }>();
   let lastPinchDist = 0;
+  let tapCandidate: { pointerId: number; startX: number; startY: number; moved: boolean } | null =
+    null;
 
   canvas.addEventListener('pointerdown', (e) => {
     // Alt+Click on Mandelbrot opens the corresponding Julia set for that exact c coordinate
@@ -159,6 +163,16 @@ async function bootstrap(): Promise<void> {
 
     canvas.setPointerCapture(e.pointerId);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePointers.size === 1) {
+      tapCandidate = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+      };
+    } else {
+      tapCandidate = null;
+    }
     if (activePointers.size === 2) {
       const pts = [...activePointers.values()];
       lastPinchDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
@@ -172,6 +186,13 @@ async function bootstrap(): Promise<void> {
     const rect = canvas.getBoundingClientRect();
 
     if (activePointers.size === 1) {
+      if (
+        tapCandidate &&
+        tapCandidate.pointerId === e.pointerId &&
+        Math.hypot(e.clientX - tapCandidate.startX, e.clientY - tapCandidate.startY) > 8
+      ) {
+        tapCandidate.moved = true;
+      }
       const dx = e.clientX - prev.x;
       const dy = e.clientY - prev.y;
       prev.x = e.clientX;
@@ -193,9 +214,21 @@ async function bootstrap(): Promise<void> {
   });
 
   const endPointer = (e: PointerEvent) => {
+    const isQuickTap =
+      e.type === 'pointerup' &&
+      tapCandidate !== null &&
+      tapCandidate.pointerId === e.pointerId &&
+      !tapCandidate.moved;
+    if (tapCandidate?.pointerId === e.pointerId) {
+      tapCandidate = null;
+    }
     activePointers.delete(e.pointerId);
     if (activePointers.size < 2) {
       lastPinchDist = 0;
+    }
+    // Light-dismiss the open mobile drawer when the user taps the canvas
+    if (isQuickTap && hud.isCompactViewport() && hud.isDrawerOpen()) {
+      hud.setDrawerOpen(false);
     }
   };
   canvas.addEventListener('pointerup', endPointer);

@@ -16,12 +16,19 @@
   --radius-sm: 7px;
   --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
+  --target-size: 24px;
 
   /* Visualization surface is always dark; explicit background set on html/body */
   color-scheme: only dark;
   background-color: var(--bg-canvas);
   color: var(--text);
   accent-color: var(--accent);
+}
+
+@media (pointer: coarse) {
+  :root {
+    --target-size: 44px;
+  }
 }
 
 *,
@@ -58,7 +65,9 @@ body {
 .viewport {
   position: relative;
   width: 100vw;
+  width: 100dvw;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   user-select: none;
 }
@@ -117,10 +126,24 @@ body {
   font-size: 0.875rem;
 }
 
+/* Top HUD bar: keeps telemetry pill and toolbar from overlapping at any width */
+.hud-top-bar {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
+  z-index: 15;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
 /* Top-left telemetry pill */
 .hud-pill {
-  position: fixed;
-  z-index: 10;
+  pointer-events: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -131,10 +154,9 @@ body {
 }
 
 .hud-top-left {
-  top: 16px;
-  left: 16px;
   padding: 10px 14px 11px;
   min-width: 248px;
+  max-width: 100%;
 }
 
 .brand-row {
@@ -226,12 +248,10 @@ body {
 
 /* Top-right toolbar */
 .hud-top-right {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 15;
+  pointer-events: auto;
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 6px;
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
@@ -239,8 +259,10 @@ body {
 .icon-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  height: 36px;
+  min-block-size: max(36px, var(--target-size));
+  min-inline-size: max(36px, var(--target-size));
   padding: 0 11px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
@@ -269,14 +291,22 @@ body {
 .seg-btn:focus-visible,
 .palette-chip:focus-visible,
 .bookmark-btn:focus-visible,
-.select-input:focus-visible {
+.select-input:focus-visible,
+.drawer-close-btn:focus-visible,
+.drawer-quick-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .icon-btn-primary {
-  border-color: rgba(56, 189, 248, 0.36);
-  background: rgba(15, 27, 48, 0.82);
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(15, 27, 48, 0.86);
+}
+
+.icon-btn-primary.is-active {
+  border-color: var(--accent);
+  background: rgba(20, 44, 74, 0.92);
+  color: #e0f5ff;
 }
 
 /* Declarative Shortcuts Popover (with polyfill selector compatibility) */
@@ -284,6 +314,7 @@ body {
   margin: auto;
   padding: 18px 20px;
   width: min(380px, calc(100vw - 32px));
+  width: min(380px, calc(100dvw - 32px));
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-strong);
   background: var(--surface-strong);
@@ -374,19 +405,21 @@ kbd {
   color: var(--text-muted);
 }
 
-/* Right-side collapsible control drawer */
+/* Right-side collapsible control drawer (bottom sheet on mobile) */
 .control-drawer {
   position: fixed;
-  top: 60px;
-  right: 16px;
-  bottom: 16px;
+  top: calc(max(16px, env(safe-area-inset-top, 0px)) + max(36px, var(--target-size)) + 8px);
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
   width: 298px;
   z-index: 12;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px 13px;
+  padding: 0 13px 12px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-top: 56px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: var(--surface);
@@ -396,10 +429,106 @@ kbd {
   transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
 }
 
+.control-drawer.no-transition {
+  transition: none;
+}
+
 .control-drawer.is-collapsed {
-  transform: translateX(calc(100% + 24px));
+  transform: translateX(calc(100% + 24px + env(safe-area-inset-right, 0px)));
   opacity: 0;
   pointer-events: none;
+}
+
+.drawer-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 -13px 2px;
+  padding: 9px 13px 8px;
+  background: var(--surface-strong);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drawer-drag-handle {
+  display: none;
+  width: 36px;
+  height: 4px;
+  margin: 0 auto 2px;
+  border-radius: 999px;
+  background: rgba(148, 178, 255, 0.36);
+}
+
+.drawer-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.drawer-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text);
+}
+
+.drawer-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-block-size: max(28px, var(--target-size));
+  min-inline-size: max(28px, var(--target-size));
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.drawer-close-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+}
+
+.drawer-quick-actions {
+  display: none;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-quick-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-block-size: max(34px, var(--target-size));
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(6, 10, 20, 0.55);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.drawer-quick-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
 
 .panel-section {
@@ -730,6 +859,7 @@ input[type='range'] {
 }
 
 /* Full HUD hidden mode */
+body.hud-hidden .hud-top-bar,
 body.hud-hidden .hud-top-left,
 body.hud-hidden .hud-top-right,
 body.hud-hidden .control-drawer {
@@ -855,15 +985,130 @@ body.hud-hidden .control-drawer {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .hud-top-bar,
+  .hud-pill,
+  .hud-top-right,
+  .control-drawer {
+    transition: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .checkbox-row {
+    min-block-size: var(--target-size);
+  }
+
+  .select-input,
+  .action-btn,
+  .seg-btn {
+    min-block-size: var(--target-size);
+  }
+
+  .popover-close {
+    width: var(--target-size);
+    height: var(--target-size);
+  }
+}
+
+@media (max-width: 680px), (max-height: 540px) {
+  .control-drawer:not([data-ready]) {
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+  }
+}
+
+@media (max-height: 540px) and (min-width: 681px) {
+  .control-drawer {
+    width: min(298px, 46vw);
+    width: min(298px, 46dvw);
+  }
+}
+
 @media (max-width: 680px) {
-  .btn-label {
+  .hud-top-bar {
+    top: max(10px, env(safe-area-inset-top, 0px));
+    left: max(10px, env(safe-area-inset-left, 0px));
+    right: max(10px, env(safe-area-inset-right, 0px));
+    gap: 8px;
+  }
+
+  .hud-top-left {
+    min-width: 0;
+    flex: 0 1 auto;
+    padding: 7px 10px 8px;
+  }
+
+  .brand-title {
+    font-size: 0.84rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .fps-readout,
+  #stage-label,
+  .telemetry-row .sep {
     display: none;
   }
 
+  .hud-secondary-btn {
+    display: none;
+  }
+
+  /* Visually hide non-primary button labels while keeping accessible names */
+  .btn-label:not(.btn-label-always) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .icon-btn {
+    padding: 0 10px;
+  }
+
+  .icon-btn-primary {
+    padding: 0 12px;
+  }
+
   .control-drawer {
-    width: calc(100vw - 32px);
-    max-height: 60vh;
     top: auto;
-    bottom: 16px;
+    left: max(10px, env(safe-area-inset-left, 0px));
+    right: max(10px, env(safe-area-inset-right, 0px));
+    bottom: max(10px, env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-height: 56vh;
+    max-height: 56svh;
+    scroll-padding-top: 66px;
+  }
+
+  .control-drawer.is-collapsed {
+    transform: translateY(calc(100% + 28px + env(safe-area-inset-bottom, 0px)));
+  }
+
+  .drawer-header {
+    padding-top: 8px;
+    touch-action: none;
+  }
+
+  .drawer-drag-handle {
+    display: block;
+  }
+
+  .drawer-quick-actions {
+    display: grid;
+  }
+}
+
+@media (max-width: 380px) {
+  .hud-compact-hide {
+    display: none;
   }
 }

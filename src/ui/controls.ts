@@ -14,6 +14,35 @@ import {
 import { FractalRenderer, RenderTelemetry } from '../engine/renderer';
 import { BOOKMARKS } from './bookmarks';
 
+export const COMPACT_VIEWPORT_QUERY = '(max-width: 680px), (max-height: 540px)';
+const BOTTOM_SHEET_QUERY = '(max-width: 680px)';
+
+/**
+ * Applies the initial collapsed/expanded drawer state before async WebGPU init
+ * so mobile/compact viewports never flash the configuration sheet open on load.
+ */
+export function applyInitialDrawerState(): void {
+  const drawer = document.getElementById('control-drawer');
+  const toggleBtn = document.getElementById('btn-toggle-panel');
+  const toggleIcon = document.getElementById('toggle-panel-icon');
+  const toggleLabel = document.getElementById('toggle-panel-label');
+  if (!drawer || !toggleBtn) return;
+
+  const open = !window.matchMedia(COMPACT_VIEWPORT_QUERY).matches;
+  drawer.classList.add('no-transition');
+  drawer.classList.toggle('is-collapsed', !open);
+  drawer.inert = !open;
+  drawer.dataset.ready = 'true';
+  toggleBtn.setAttribute('aria-expanded', String(open));
+  toggleBtn.setAttribute('aria-label', open ? 'Hide controls panel' : 'Show controls panel');
+  toggleBtn.classList.toggle('is-active', open);
+  if (toggleIcon) toggleIcon.textContent = open ? '✕' : '☰';
+  if (toggleLabel) toggleLabel.textContent = open ? 'Hide' : 'Controls';
+  requestAnimationFrame(() => {
+    drawer.classList.remove('no-transition');
+  });
+}
+
 function formatZoom(zoom: number): string {
   if (zoom < 1000) {
     return `${zoom.toFixed(2)}×`;
@@ -52,8 +81,16 @@ export class HudController {
   private btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
   private btnSnapshot = document.getElementById('btn-snapshot') as HTMLButtonElement;
   private btnTogglePanel = document.getElementById('btn-toggle-panel') as HTMLButtonElement;
+  private togglePanelIcon = document.getElementById('toggle-panel-icon') as HTMLElement;
+  private togglePanelLabel = document.getElementById('toggle-panel-label') as HTMLElement;
+  private btnClosePanel = document.getElementById('btn-close-panel') as HTMLButtonElement;
+  private drawerHeader = document.getElementById('drawer-header') as HTMLElement;
+  private btnDrawerReset = document.getElementById('btn-drawer-reset') as HTMLButtonElement;
+  private btnDrawerSnapshot = document.getElementById('btn-drawer-snapshot') as HTMLButtonElement;
   private controlDrawer = document.getElementById('control-drawer') as HTMLElement;
   private hudHiddenHint = document.getElementById('hud-hidden-hint') as HTMLElement;
+  private compactMq = window.matchMedia(COMPACT_VIEWPORT_QUERY);
+  private bottomSheetMq = window.matchMedia(BOTTOM_SHEET_QUERY);
 
   private selectFractal = document.getElementById('select-fractal') as HTMLSelectElement;
   private btnJuliaFromCenter = document.getElementById(
@@ -103,7 +140,52 @@ export class HudController {
     this.populateBookmarks();
     this.bindEvents();
     this.setupRangeFallbackProgress();
+    this.setDrawerOpen(!this.isCompactViewport(), { instant: true });
     this.syncControls();
+  }
+
+  public isCompactViewport(): boolean {
+    return this.compactMq.matches;
+  }
+
+  public isBottomSheetMode(): boolean {
+    return this.bottomSheetMq.matches;
+  }
+
+  public isDrawerOpen(): boolean {
+    return !this.controlDrawer.classList.contains('is-collapsed');
+  }
+
+  public setDrawerOpen(
+    open: boolean,
+    options?: { restoreFocus?: boolean; instant?: boolean },
+  ): void {
+    if (options?.instant) {
+      this.controlDrawer.classList.add('no-transition');
+    }
+
+    this.controlDrawer.style.transform = '';
+    this.controlDrawer.classList.toggle('is-collapsed', !open);
+    this.controlDrawer.inert = !open;
+    this.controlDrawer.dataset.ready = 'true';
+    this.btnTogglePanel.setAttribute('aria-expanded', String(open));
+    this.btnTogglePanel.setAttribute(
+      'aria-label',
+      open ? 'Hide controls panel' : 'Show controls panel',
+    );
+    this.btnTogglePanel.classList.toggle('is-active', open);
+    this.togglePanelIcon.textContent = open ? '✕' : '☰';
+    this.togglePanelLabel.textContent = open ? 'Hide' : 'Controls';
+
+    if (options?.instant) {
+      requestAnimationFrame(() => {
+        this.controlDrawer.classList.remove('no-transition');
+      });
+    }
+
+    if (!open && options?.restoreFocus) {
+      this.btnTogglePanel.focus();
+    }
   }
 
   private populateFractals(): void {
@@ -211,6 +293,9 @@ export class HudController {
           this.syncControls();
         }
         this.camera.flyTo(bm.centerX, bm.centerY, bm.zoom, 1.25);
+        if (this.isCompactViewport()) {
+          this.setDrawerOpen(false);
+        }
       });
       this.bookmarkList.appendChild(btn);
     }
@@ -235,6 +320,9 @@ export class HudController {
 
     this.btnJuliaFromCenter.addEventListener('click', () => {
       this.onExploreJuliaAt(this.camera.centerX, this.camera.centerY);
+      if (this.isCompactViewport()) {
+        this.setDrawerOpen(false);
+      }
     });
 
     this.toggleJuliaOrbit.addEventListener('change', () => {
@@ -281,8 +369,9 @@ export class HudController {
       this.resetCamera();
     });
 
-    this.btnSnapshot.addEventListener('click', async () => {
+    const saveSnapshot = async () => {
       this.btnSnapshot.disabled = true;
+      this.btnDrawerSnapshot.disabled = true;
       try {
         const blob = await this.renderer.captureSnapshot();
         if (blob) {
@@ -295,12 +384,44 @@ export class HudController {
         }
       } finally {
         this.btnSnapshot.disabled = false;
+        this.btnDrawerSnapshot.disabled = false;
+      }
+    };
+
+    this.btnSnapshot.addEventListener('click', () => {
+      void saveSnapshot();
+    });
+
+    this.btnDrawerSnapshot.addEventListener('click', () => {
+      void saveSnapshot();
+    });
+
+    this.btnDrawerReset.addEventListener('click', () => {
+      this.resetCamera();
+      if (this.isCompactViewport()) {
+        this.setDrawerOpen(false);
       }
     });
 
     this.btnTogglePanel.addEventListener('click', () => {
-      const collapsed = this.controlDrawer.classList.toggle('is-collapsed');
-      this.btnTogglePanel.setAttribute('aria-expanded', String(!collapsed));
+      this.setDrawerOpen(!this.isDrawerOpen());
+    });
+
+    this.btnClosePanel.addEventListener('click', () => {
+      this.setDrawerOpen(false, { restoreFocus: true });
+    });
+
+    this.setupDrawerSwipeToDismiss();
+
+    // Close drawer with Escape when in compact mode or focus is inside the drawer
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Escape' || !this.isDrawerOpen()) return;
+      const popoverEl = document.getElementById('shortcuts-popover');
+      if (popoverEl?.matches(':is(:popover-open, .\\:popover-open)')) return;
+      const focusInsideDrawer = this.controlDrawer.contains(document.activeElement);
+      if (this.isCompactViewport() || focusInsideDrawer) {
+        this.setDrawerOpen(false, { restoreFocus: true });
+      }
     });
 
     this.toggleLivingMorph.addEventListener('change', () => {
@@ -349,15 +470,54 @@ export class HudController {
       });
     });
 
-    // Return focus to trigger when closing the shortcuts popover from inside
+    // Return focus to the visible trigger when closing the shortcuts popover
     const popoverEl = document.getElementById('shortcuts-popover');
     const triggerEl = document.getElementById('btn-shortcuts');
+    const drawerTriggerEl = document.getElementById('btn-drawer-shortcuts');
     popoverEl?.addEventListener('toggle', (ev) => {
       const toggleEvent = ev as ToggleEvent;
       if (toggleEvent.newState === 'closed') {
-        triggerEl?.focus();
+        const target =
+          triggerEl && triggerEl.offsetParent !== null ? triggerEl : drawerTriggerEl;
+        target?.focus();
       }
     });
+  }
+
+  private setupDrawerSwipeToDismiss(): void {
+    let activePointerId: number | null = null;
+    let startY = 0;
+    let currentDy = 0;
+
+    this.drawerHeader.addEventListener('pointerdown', (ev) => {
+      if (!this.isBottomSheetMode() || !this.isDrawerOpen()) return;
+      if ((ev.target as HTMLElement | null)?.closest('button')) return;
+      activePointerId = ev.pointerId;
+      startY = ev.clientY;
+      currentDy = 0;
+      this.drawerHeader.setPointerCapture(ev.pointerId);
+      this.controlDrawer.classList.add('no-transition');
+    });
+
+    this.drawerHeader.addEventListener('pointermove', (ev) => {
+      if (ev.pointerId !== activePointerId) return;
+      currentDy = Math.max(0, ev.clientY - startY);
+      this.controlDrawer.style.transform = currentDy > 0 ? `translateY(${currentDy}px)` : '';
+    });
+
+    const finishSwipe = (ev: PointerEvent) => {
+      if (ev.pointerId !== activePointerId) return;
+      activePointerId = null;
+      this.controlDrawer.classList.remove('no-transition');
+      this.controlDrawer.style.transform = '';
+      if (currentDy >= 48) {
+        this.setDrawerOpen(false);
+      }
+      currentDy = 0;
+    };
+
+    this.drawerHeader.addEventListener('pointerup', finishSwipe);
+    this.drawerHeader.addEventListener('pointercancel', finishSwipe);
   }
 
   private setupRangeFallbackProgress(): void {

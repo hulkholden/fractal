@@ -2,13 +2,15 @@ export interface FractalBookmark {
   id: string;
   name: string;
   subtitle: string;
-  fractalId: string;
+  fractalId: 'mandelbrot' | 'julia';
   centerX: number;
   centerY: number;
   zoom: number;
+  juliaC?: [number, number];
 }
 
 export const BOOKMARKS: readonly FractalBookmark[] = [
+  // Mandelbrot destinations
   {
     id: 'overview',
     name: 'Full Mandelbrot',
@@ -62,5 +64,67 @@ export const BOOKMARKS: readonly FractalBookmark[] = [
     centerX: -0.743643887037151,
     centerY: 0.13182590420533,
     zoom: 2.2e8,
+  },
+
+  // Julia destinations
+  {
+    id: 'julia-seahorse',
+    name: 'Seahorse Overview',
+    subtitle: 'Full filigree web',
+    fractalId: 'julia',
+    centerX: 0.0,
+    centerY: 0.0,
+    zoom: 0.92,
+    juliaC: [-0.74543, 0.11301],
+  },
+  {
+    id: 'julia-dragon',
+    name: 'Golden Dragon',
+    subtitle: 'Sweeping spiral spine',
+    fractalId: 'julia',
+    centerX: 0.0,
+    centerY: 0.0,
+    zoom: 0.98,
+    juliaC: [-0.8, 0.156],
+  },
+  {
+    id: 'julia-galaxy',
+    name: 'Galaxy Vortex',
+    subtitle: 'Twin cyclone arms',
+    fractalId: 'julia',
+    centerX: 0.0,
+    centerY: 0.0,
+    zoom: 1.05,
+    juliaC: [-0.4, 0.6],
+  },
+  {
+    id: 'julia-spiral-core',
+    name: 'Spiral Heart',
+    subtitle: 'Logarithmic spiral eye',
+    fractalId: 'julia',
+    centerX: -0.49931336633391377,
+    centerY: 0.05654382489378136,
+    zoom: 18.0,
+    juliaC: [-0.74543, 0.11301],
+  },
+  {
+    id: 'julia-web-zoom',
+    name: 'Luminous Lace',
+    subtitle: 'Infinite petal weave',
+    fractalId: 'julia',
+    centerX: 0.0,
+    centerY: 0.0,
+    zoom: 1.12,
+    juliaC: [0.285, 0.01],
+  },
+  {
+    id: 'julia-deep-spiral',
+    name: 'Deep Julia Eye',
+    subtitle: 'DF64 spiral core (10⁵×)',
+    fractalId: 'julia',
+    centerX: -0.49931336633391377,
+    centerY: 0.05654382489378136,
+    zoom: 1.8e5,
+    juliaC: [-0.74543, 0.11301],
   },
 ];

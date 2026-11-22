@@ -27,7 +27,7 @@ fn main_interactive(@builtin(global_invocation_id) gid: vec3<u32>) {
       return;
     }
 
-    let res = fractal_iterate_f32(cx, cy, 0.0, 0.0, 0u, max_iter, bailout2);
+    let res = fractal_iterate_f32(cx, cy, 0.0, 0.0, 0u, max_iter, bailout2, 1u);
     if (res.escaped == 1u) {
       samples0[idx].x = compute_smooth_iter(res.iter, res.mag2);
     } else {
@@ -50,7 +50,8 @@ fn main_interactive(@builtin(global_invocation_id) gid: vec3<u32>) {
       vec2<f32>(0.0, 0.0),
       0u,
       max_iter,
-      bailout2
+      bailout2,
+      1u
     );
     if (res.escaped == 1u) {
       samples0[idx].x = compute_smooth_iter(res.iter, res.mag2);
@@ -109,7 +110,7 @@ fn main_refine(@builtin(global_invocation_id) gid: vec3<u32>) {
       return;
     }
 
-    res = fractal_iterate_f32(cx, cy, zx.x, zy.x, iter, steps, bailout2);
+    res = fractal_iterate_f32(cx, cy, zx.x, zy.x, iter, steps, bailout2, is_first);
   } else {
     let step_df = vec2<f32>(u_comp.scale.x, u_comp.scale.y);
     let cx = df_add(vec2<f32>(u_comp.center.x, u_comp.center.y), df_mul_f32(step_df, dx));
@@ -121,7 +122,7 @@ fn main_refine(@builtin(global_invocation_id) gid: vec3<u32>) {
       return;
     }
 
-    res = fractal_iterate_df64(cx, cy, zx, zy, iter, steps, bailout2);
+    res = fractal_iterate_df64(cx, cy, zx, zy, iter, steps, bailout2, is_first);
   }
 
   if (res.escaped == 1u) {

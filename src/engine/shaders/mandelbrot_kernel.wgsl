@@ -25,16 +25,17 @@ fn fractal_early_interior(cx: f32, cy: f32) -> bool {
 }
 
 fn fractal_iterate_f32(
-  cx: f32,
-  cy: f32,
+  px: f32,
+  py: f32,
   zx_init: f32,
   zy_init: f32,
   start_iter: u32,
   steps: u32,
-  bailout2: f32
+  bailout2: f32,
+  is_first: u32
 ) -> IterResult {
-  var zx = zx_init;
-  var zy = zy_init;
+  var zx = select(zx_init, 0.0, is_first == 1u);
+  var zy = select(zy_init, 0.0, is_first == 1u);
   var iter = start_iter;
   let end_iter = start_iter + steps;
   var mag2 = zx * zx + zy * zy;
@@ -48,8 +49,8 @@ fn fractal_iterate_f32(
       escaped = 1u;
       break;
     }
-    let next_zy = 2.0 * zx * zy + cy;
-    zx = zx2 - zy2 + cx;
+    let next_zy = 2.0 * zx * zy + py;
+    zx = zx2 - zy2 + px;
     zy = next_zy;
     iter = iter + 1u;
     if (iter >= end_iter) {
@@ -61,16 +62,17 @@ fn fractal_iterate_f32(
 }
 
 fn fractal_iterate_df64(
-  cx: vec2<f32>,
-  cy: vec2<f32>,
+  px: vec2<f32>,
+  py: vec2<f32>,
   zx_init: vec2<f32>,
   zy_init: vec2<f32>,
   start_iter: u32,
   steps: u32,
-  bailout2: f32
+  bailout2: f32,
+  is_first: u32
 ) -> IterResult {
-  var zx = zx_init;
-  var zy = zy_init;
+  var zx = select(zx_init, vec2<f32>(0.0, 0.0), is_first == 1u);
+  var zy = select(zy_init, vec2<f32>(0.0, 0.0), is_first == 1u);
   var iter = start_iter;
   var mag2 = zx.x * zx.x + zy.x * zy.x;
   var escaped = 0u;
@@ -84,8 +86,8 @@ fn fractal_iterate_df64(
       break;
     }
     let zxy = df_mul(zx, zy);
-    let next_zy = df_add(df_mul2(zxy), cy);
-    zx = df_add(df_sub(zx2, zy2), cx);
+    let next_zy = df_add(df_mul2(zxy), py);
+    zx = df_add(df_sub(zx2, zy2), px);
     zy = next_zy;
     iter = iter + 1u;
   }

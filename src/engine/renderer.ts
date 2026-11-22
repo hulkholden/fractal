@@ -45,8 +45,13 @@ const SUBPIXEL_OFFSETS: readonly [number, number][] = [
 ];
 
 const SETTLE_DELAY_MS = 95;
-const COMPUTE_UNIFORM_SIZE = 80; // 5 * vec4 (f32/u32)
+const COMPUTE_UNIFORM_SIZE = 96; // 6 * vec4 (f32/u32)
 const DISPLAY_UNIFORM_SIZE = 304; // 3 * vec4 + 8 * vec4 + 8 * vec4
+
+interface ComputePipelinePair {
+  interactive: GPUComputePipeline;
+  refine: GPUComputePipeline;
+}
 
 export class FractalRenderer {
   private canvas: HTMLCanvasElement;
@@ -55,6 +60,9 @@ export class FractalRenderer {
   private format!: GPUTextureFormat;
   private gpuName = 'WebGPU';
 
+  private computeBindGroupLayout!: GPUBindGroupLayout;
+  private computePipelineLayout!: GPUPipelineLayout;
+  private computePipelines = new Map<string, ComputePipelinePair>();
   private computePipelineInteractive!: GPUComputePipeline;
   private computePipelineRefine!: GPUComputePipeline;
   private displayPipeline!: GPURenderPipeline;
@@ -212,6 +220,22 @@ export class FractalRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    this.computeBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'compute-bgl',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      ],
+    });
+
+    this.computePipelineLayout = this.device.createPipelineLayout({
+      label: 'compute-pipeline-layout',
+      bindGroupLayouts: [this.computeBindGroupLayout],
+    });
+
     onStage?.('Init: compiling shaders...');
     await this.buildDisplayPipeline();
     await this.buildComputePipelines(this.fractal);
@@ -308,6 +332,13 @@ export class FractalRenderer {
   }
 
   private async buildComputePipelines(fractal: FractalDefinition): Promise<void> {
+    const cached = this.computePipelines.get(fractal.id);
+    if (cached) {
+      this.computePipelineInteractive = cached.interactive;
+      this.computePipelineRefine = cached.refine;
+      return;
+    }
+
     const computeCode = assembleComputeShader(fractal);
     const computeModule = this.device.createShaderModule({
       label: `compute-${fractal.id}`,
@@ -322,39 +353,27 @@ export class FractalRenderer {
       throw new Error(text);
     }
 
-    const bindGroupLayout = this.device.createBindGroupLayout({
-      label: 'compute-bgl',
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      ],
-    });
-
-    const pipelineLayout = this.device.createPipelineLayout({
-      label: 'compute-pipeline-layout',
-      bindGroupLayouts: [bindGroupLayout],
-    });
-
-    this.computePipelineInteractive = await this.device.createComputePipelineAsync({
-      label: 'compute-interactive',
-      layout: pipelineLayout,
+    const interactive = await this.device.createComputePipelineAsync({
+      label: `compute-interactive-${fractal.id}`,
+      layout: this.computePipelineLayout,
       compute: {
         module: computeModule,
         entryPoint: 'main_interactive',
       },
     });
 
-    this.computePipelineRefine = await this.device.createComputePipelineAsync({
-      label: 'compute-refine',
-      layout: pipelineLayout,
+    const refine = await this.device.createComputePipelineAsync({
+      label: `compute-refine-${fractal.id}`,
+      layout: this.computePipelineLayout,
       compute: {
         module: computeModule,
         entryPoint: 'main_refine',
       },
     });
+
+    this.computePipelines.set(fractal.id, { interactive, refine });
+    this.computePipelineInteractive = interactive;
+    this.computePipelineRefine = refine;
   }
 
   public resize(): boolean {
@@ -430,7 +449,7 @@ export class FractalRenderer {
 
     this.computeBindGroup = this.device.createBindGroup({
       label: 'compute-bg',
-      layout: this.computePipelineInteractive.getBindGroupLayout(0),
+      layout: this.computeBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.computeUniformBuffer } },
         { binding: 1, resource: { buffer: this.samples0Buffer } },
@@ -480,12 +499,15 @@ export class FractalRenderer {
     maxIter: number,
     sampleIndex: number,
     isFirstChunk: boolean,
+    juliaC: [number, number],
   ): void {
     const [cxHi, cxLo] = splitDouble(camera.centerX);
     const [cyHi, cyLo] = splitDouble(camera.centerY);
     const step = camera.complexHeight / Math.max(1, height);
     const [stepHi, stepLo] = splitDouble(step);
     const bailout2 = this.fractal.bailoutRadius * this.fractal.bailoutRadius;
+    const [jReHi, jReLo] = splitDouble(juliaC[0]);
+    const [jImHi, jImLo] = splitDouble(juliaC[1]);
 
     const f = this.computeUniformF32;
     const u = this.computeUniformU32;
@@ -519,6 +541,12 @@ export class FractalRenderer {
     u[17] = isFirstChunk ? 1 : 0;
     u[18] = width >>> 0;
     u[19] = 0;
+
+    // julia_c: vec4<f32>
+    f[20] = jReHi;
+    f[21] = jReLo;
+    f[22] = jImHi;
+    f[23] = jImLo;
 
     this.device.queue.writeBuffer(this.computeUniformBuffer, 0, this.computeUniformRaw);
   }
@@ -561,6 +589,7 @@ export class FractalRenderer {
     camera: CameraController,
     gradientState: GradientState,
     evaluatedGradient: EvaluatedGradient,
+    juliaC: [number, number],
   ): RenderTelemetry {
     const dtMs = Math.max(1, Math.min(100, now - this.lastFrameTimestamp));
     this.lastFrameTimestamp = now;
@@ -618,6 +647,7 @@ export class FractalRenderer {
         this.currentInteractiveIter,
         0,
         true,
+        juliaC,
       );
 
       if (this.computeBindGroup) {
@@ -657,6 +687,7 @@ export class FractalRenderer {
         this.currentTargetIter,
         this.refineSampleIdx,
         isFirstChunk,
+        juliaC,
       );
 
       if (this.computeBindGroup) {

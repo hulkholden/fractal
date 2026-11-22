@@ -1,6 +1,11 @@
 import './style.css';
 import { CameraController } from './engine/camera';
-import { FRACTAL_REGISTRY } from './engine/fractals';
+import {
+  createDefaultJuliaState,
+  FractalDefinition,
+  getFractalById,
+  stepJuliaParam,
+} from './engine/fractals';
 import { createDefaultGradientState, PALETTES, stepGradient } from './engine/palettes';
 import { FractalRenderer } from './engine/renderer';
 import { BOOKMARKS } from './ui/bookmarks';
@@ -35,26 +40,37 @@ async function bootstrap(): Promise<void> {
   if (!canvas) return;
 
   const params = new URLSearchParams(window.location.search);
-  const initialFractal = FRACTAL_REGISTRY[0];
-  let startX = initialFractal.defaultCenter[0];
-  let startY = initialFractal.defaultCenter[1];
-  let startZoom = initialFractal.defaultZoom;
+  const julia = createDefaultJuliaState();
 
   const bmParam = params.get('bookmark');
-  if (bmParam) {
-    const bm = BOOKMARKS.find((b) => b.id === bmParam);
-    if (bm) {
-      startX = bm.centerX;
-      startY = bm.centerY;
-      startZoom = bm.zoom;
-    }
+  const matchedBm = bmParam ? BOOKMARKS.find((b) => b.id === bmParam) : undefined;
+
+  let activeFractal: FractalDefinition = getFractalById(
+    params.get('fractal') ?? matchedBm?.fractalId ?? 'mandelbrot',
+  );
+
+  let startX = matchedBm?.centerX ?? activeFractal.defaultCenter[0];
+  let startY = matchedBm?.centerY ?? activeFractal.defaultCenter[1];
+  let startZoom = matchedBm?.zoom ?? activeFractal.defaultZoom;
+
+  if (matchedBm?.juliaC) {
+    julia.re = matchedBm.juliaC[0];
+    julia.im = matchedBm.juliaC[1];
+    julia.orbitAngle = Math.atan2(julia.im, julia.re);
   }
+
   const xParam = Number(params.get('x'));
   const yParam = Number(params.get('y'));
   const zParam = Number(params.get('z'));
   if (params.has('x') && Number.isFinite(xParam)) startX = xParam;
   if (params.has('y') && Number.isFinite(yParam)) startY = yParam;
   if (params.has('z') && Number.isFinite(zParam) && zParam > 0) startZoom = zParam;
+
+  const creParam = Number(params.get('cre'));
+  const cimParam = Number(params.get('cim'));
+  if (params.has('cre') && Number.isFinite(creParam)) julia.re = creParam;
+  if (params.has('cim') && Number.isFinite(cimParam)) julia.im = cimParam;
+  if (params.get('orbit') === '1') julia.animateOrbit = true;
 
   const camera = new CameraController({
     centerX: startX,
@@ -71,7 +87,8 @@ async function bootstrap(): Promise<void> {
       gradient.morphCursor = idx;
     }
   }
-  const renderer = new FractalRenderer(canvas, initialFractal, (gpuErr) => {
+
+  const renderer = new FractalRenderer(canvas, activeFractal, (gpuErr) => {
     showError(gpuErr);
   });
 
@@ -85,21 +102,61 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
-  const hud = new HudController(renderer, camera, gradient, (nextFractal) => {
-    void renderer.setFractal(nextFractal);
-    camera.flyTo(
-      nextFractal.defaultCenter[0],
-      nextFractal.defaultCenter[1],
-      nextFractal.defaultZoom,
-      0.8,
-    );
-  });
+  const switchFractal = async (nextFractal: FractalDefinition, preserveCamera = false) => {
+    activeFractal = nextFractal;
+    await renderer.setFractal(nextFractal);
+    if (!preserveCamera) {
+      camera.flyTo(
+        nextFractal.defaultCenter[0],
+        nextFractal.defaultCenter[1],
+        nextFractal.defaultZoom,
+        0.75,
+      );
+    } else {
+      camera.markDirty();
+    }
+  };
+
+  const exploreJuliaAt = async (re: number, im: number) => {
+    const juliaDef = getFractalById('julia');
+    julia.animateOrbit = false;
+    julia.transition = null;
+    julia.re = re;
+    julia.im = im;
+    julia.orbitAngle = Math.atan2(im, re);
+    hud.setActiveFractal(juliaDef);
+    await switchFractal(juliaDef, false);
+  };
+
+  const hud = new HudController(
+    renderer,
+    camera,
+    gradient,
+    julia,
+    activeFractal,
+    (nextFractal, preserveCamera) => {
+      void switchFractal(nextFractal, preserveCamera);
+    },
+    (re, im) => {
+      void exploreJuliaAt(re, im);
+    },
+  );
 
   // --- Pointer & Touch Interaction (60Hz Pan + Cursor-Anchored Zoom) ---
   const activePointers = new Map<number, { x: number; y: number }>();
   let lastPinchDist = 0;
 
   canvas.addEventListener('pointerdown', (e) => {
+    // Alt+Click on Mandelbrot opens the corresponding Julia set for that exact c coordinate
+    if (e.altKey && activeFractal.id === 'mandelbrot') {
+      const rect = canvas.getBoundingClientRect();
+      const step = camera.complexHeight / Math.max(1, rect.height);
+      const pickedRe = camera.centerX + (e.clientX - rect.left - rect.width * 0.5) * step;
+      const pickedIm = camera.centerY + (rect.height * 0.5 - (e.clientY - rect.top)) * step;
+      void exploreJuliaAt(pickedRe, pickedIm);
+      return;
+    }
+
     canvas.setPointerCapture(e.pointerId);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.size === 2) {
@@ -150,11 +207,16 @@ async function bootstrap(): Promise<void> {
     (e) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      // Normalize trackpad pinch (ctrlKey) and mouse wheel deltas
       const sensitivity = e.ctrlKey ? 0.01 : 0.0018;
       const clampedDelta = Math.max(-220, Math.min(220, e.deltaY));
       const factor = Math.exp(-clampedDelta * sensitivity);
-      camera.zoomAtPixel(factor, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+      camera.zoomAtPixel(
+        factor,
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        rect.width,
+        rect.height,
+      );
     },
     { passive: false },
   );
@@ -193,6 +255,10 @@ async function bootstrap(): Promise<void> {
       case 'M':
         hud.toggleLivingMorphMode();
         break;
+      case 'o':
+      case 'O':
+        hud.toggleJuliaOrbitMode();
+        break;
       case '+':
       case '=':
         camera.zoomAtPixel(1.35, rect.width * 0.5, rect.height * 0.5, rect.width, rect.height);
@@ -222,7 +288,6 @@ async function bootstrap(): Promise<void> {
     }
   });
 
-  // Resize observer keeps backing resolution matched to viewport
   const resizeObserver = new ResizeObserver(() => {
     if (renderer.resize()) {
       camera.markDirty();
@@ -252,8 +317,15 @@ async function bootstrap(): Promise<void> {
     prevTime = now;
 
     camera.update(dtSeconds);
+    if (activeFractal.hasJuliaParam && stepJuliaParam(julia, dtSeconds)) {
+      camera.markDirty();
+    }
+
     const evaluatedGradient = stepGradient(gradient, dtSeconds);
-    const telemetry = renderer.renderFrame(now, camera, gradient, evaluatedGradient);
+    const telemetry = renderer.renderFrame(now, camera, gradient, evaluatedGradient, [
+      julia.re,
+      julia.im,
+    ]);
     hud.updateTelemetry(now, telemetry, evaluatedGradient);
 
     rafId = requestAnimationFrame(frame);

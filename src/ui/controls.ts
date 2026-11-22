@@ -1,5 +1,10 @@
 import { CameraController } from '../engine/camera';
-import { FRACTAL_REGISTRY, FractalDefinition } from '../engine/fractals';
+import {
+  FRACTAL_REGISTRY,
+  FractalDefinition,
+  JULIA_PRESETS,
+  JuliaParamState,
+} from '../engine/fractals';
 import {
   buildLivePreviewCss,
   EvaluatedGradient,
@@ -21,6 +26,11 @@ function formatZoom(zoom: number): string {
 function formatCoord(val: number, zoom: number): string {
   const digits = Math.min(15, Math.max(6, Math.ceil(Math.log10(Math.max(1, zoom))) + 4));
   return `${val >= 0 ? '+' : ''}${val.toFixed(digits)}`;
+}
+
+function formatComplexCompact(re: number, im: number): string {
+  const sign = im >= 0 ? '+' : '-';
+  return `${re.toFixed(4)} ${sign} ${Math.abs(im).toFixed(4)}i`;
 }
 
 export class HudController {
@@ -46,6 +56,22 @@ export class HudController {
   private hudHiddenHint = document.getElementById('hud-hidden-hint') as HTMLElement;
 
   private selectFractal = document.getElementById('select-fractal') as HTMLSelectElement;
+  private btnJuliaFromCenter = document.getElementById(
+    'btn-julia-from-center',
+  ) as HTMLButtonElement;
+
+  private sectionJulia = document.getElementById('section-julia') as HTMLElement;
+  private juliaCReadout = document.getElementById('julia-c-readout') as HTMLElement;
+  private juliaPresetGrid = document.getElementById('julia-preset-grid') as HTMLElement;
+  private toggleJuliaOrbit = document.getElementById('toggle-julia-orbit') as HTMLInputElement;
+  private groupOrbitSpeed = document.getElementById('group-orbit-speed') as HTMLElement;
+  private sliderOrbitSpeed = document.getElementById('slider-orbit-speed') as HTMLInputElement;
+  private outOrbitSpeed = document.getElementById('out-orbit-speed') as HTMLOutputElement;
+  private sliderJuliaRe = document.getElementById('slider-julia-re') as HTMLInputElement;
+  private outJuliaRe = document.getElementById('out-julia-re') as HTMLOutputElement;
+  private sliderJuliaIm = document.getElementById('slider-julia-im') as HTMLInputElement;
+  private outJuliaIm = document.getElementById('out-julia-im') as HTMLOutputElement;
+
   private paletteGrid = document.getElementById('palette-grid') as HTMLElement;
   private paletteActiveName = document.getElementById('palette-active-name') as HTMLElement;
   private gradientPreviewBar = document.getElementById('gradient-preview-bar') as HTMLElement;
@@ -57,15 +83,22 @@ export class HudController {
   private bookmarkList = document.getElementById('bookmark-list') as HTMLElement;
 
   private paletteButtons: HTMLButtonElement[] = [];
+  private juliaPresetButtons: HTMLButtonElement[] = [];
+  private activeFractal: FractalDefinition;
   private lastUiTick = 0;
 
   constructor(
     private renderer: FractalRenderer,
     private camera: CameraController,
     private gradient: GradientState,
-    private onFractalChange: (fractal: FractalDefinition) => void,
+    private julia: JuliaParamState,
+    initialFractal: FractalDefinition,
+    private onFractalChange: (fractal: FractalDefinition, preserveCamera?: boolean) => void,
+    private onExploreJuliaAt: (re: number, im: number) => void,
   ) {
+    this.activeFractal = initialFractal;
     this.populateFractals();
+    this.populateJuliaPresets();
     this.populatePalettes();
     this.populateBookmarks();
     this.bindEvents();
@@ -81,9 +114,45 @@ export class HudController {
       opt.textContent = f.name;
       this.selectFractal.appendChild(opt);
     }
-    const current = FRACTAL_REGISTRY[0];
-    this.fractalTitle.textContent = current.name;
-    this.fractalFormula.textContent = current.formula;
+    this.selectFractal.value = this.activeFractal.id;
+    this.fractalTitle.textContent = this.activeFractal.name;
+    this.fractalFormula.textContent = this.activeFractal.formula;
+  }
+
+  private populateJuliaPresets(): void {
+    this.juliaPresetGrid.innerHTML = '';
+    this.juliaPresetButtons = JULIA_PRESETS.map((preset) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'preset-chip';
+      btn.dataset.presetId = preset.id;
+
+      const name = document.createElement('span');
+      name.className = 'preset-chip-name';
+      name.textContent = preset.name;
+
+      const sub = document.createElement('span');
+      sub.className = 'preset-chip-sub';
+      sub.textContent = preset.subtitle;
+
+      btn.append(name, sub);
+      btn.addEventListener('click', () => {
+        this.julia.animateOrbit = false;
+        this.julia.transition = {
+          startRe: this.julia.re,
+          startIm: this.julia.im,
+          endRe: preset.re,
+          endIm: preset.im,
+          elapsed: 0,
+          duration: 0.65,
+        };
+        this.camera.markDirty();
+        this.syncControls();
+      });
+
+      this.juliaPresetGrid.appendChild(btn);
+      return btn;
+    });
   }
 
   private populatePalettes(): void {
@@ -113,7 +182,8 @@ export class HudController {
 
   private populateBookmarks(): void {
     this.bookmarkList.innerHTML = '';
-    for (const bm of BOOKMARKS) {
+    const matching = BOOKMARKS.filter((bm) => bm.fractalId === this.activeFractal.id);
+    for (const bm of matching) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'bookmark-btn';
@@ -128,19 +198,79 @@ export class HudController {
 
       btn.append(name, sub);
       btn.addEventListener('click', () => {
+        if (bm.juliaC) {
+          this.julia.animateOrbit = false;
+          this.julia.transition = {
+            startRe: this.julia.re,
+            startIm: this.julia.im,
+            endRe: bm.juliaC[0],
+            endIm: bm.juliaC[1],
+            elapsed: 0,
+            duration: 0.85,
+          };
+          this.syncControls();
+        }
         this.camera.flyTo(bm.centerX, bm.centerY, bm.zoom, 1.25);
       });
       this.bookmarkList.appendChild(btn);
     }
   }
 
+  public setActiveFractal(fractal: FractalDefinition): void {
+    this.activeFractal = fractal;
+    this.selectFractal.value = fractal.id;
+    this.fractalTitle.textContent = fractal.name;
+    this.fractalFormula.textContent = fractal.formula;
+    this.populateBookmarks();
+    this.syncControls();
+  }
+
   private bindEvents(): void {
     this.selectFractal.addEventListener('change', () => {
       const chosen =
         FRACTAL_REGISTRY.find((f) => f.id === this.selectFractal.value) ?? FRACTAL_REGISTRY[0];
-      this.fractalTitle.textContent = chosen.name;
-      this.fractalFormula.textContent = chosen.formula;
+      this.setActiveFractal(chosen);
       this.onFractalChange(chosen);
+    });
+
+    this.btnJuliaFromCenter.addEventListener('click', () => {
+      this.onExploreJuliaAt(this.camera.centerX, this.camera.centerY);
+    });
+
+    this.toggleJuliaOrbit.addEventListener('change', () => {
+      this.julia.animateOrbit = this.toggleJuliaOrbit.checked;
+      this.julia.transition = null;
+      if (this.julia.animateOrbit) {
+        this.julia.orbitAngle = Math.atan2(this.julia.im, this.julia.re);
+      }
+      this.syncControls();
+    });
+
+    this.sliderOrbitSpeed.addEventListener('input', () => {
+      this.julia.orbitSpeed = parseFloat(this.sliderOrbitSpeed.value);
+      this.outOrbitSpeed.textContent = `${this.julia.orbitSpeed.toFixed(2)} rad/s`;
+    });
+
+    this.sliderJuliaRe.addEventListener('input', () => {
+      this.julia.animateOrbit = false;
+      this.julia.transition = null;
+      this.julia.re = parseFloat(this.sliderJuliaRe.value);
+      this.julia.orbitAngle = Math.atan2(this.julia.im, this.julia.re);
+      this.camera.markDirty();
+      this.syncJuliaReadouts();
+      this.toggleJuliaOrbit.checked = false;
+      this.groupOrbitSpeed.hidden = true;
+    });
+
+    this.sliderJuliaIm.addEventListener('input', () => {
+      this.julia.animateOrbit = false;
+      this.julia.transition = null;
+      this.julia.im = parseFloat(this.sliderJuliaIm.value);
+      this.julia.orbitAngle = Math.atan2(this.julia.im, this.julia.re);
+      this.camera.markDirty();
+      this.syncJuliaReadouts();
+      this.toggleJuliaOrbit.checked = false;
+      this.groupOrbitSpeed.hidden = true;
     });
 
     this.btnPlayPause.addEventListener('click', () => {
@@ -159,7 +289,7 @@ export class HudController {
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `mandelbrot-${Date.now()}.png`;
+          a.download = `${this.activeFractal.id}-${Date.now()}.png`;
           a.click();
           URL.revokeObjectURL(url);
         }
@@ -239,7 +369,13 @@ export class HudController {
       const pct = ((val - min) / Math.max(1e-6, max - min)) * 100;
       el.style.setProperty('--progress', `${pct}%`);
     };
-    for (const slider of [this.sliderFlowSpeed, this.sliderDensity]) {
+    for (const slider of [
+      this.sliderFlowSpeed,
+      this.sliderDensity,
+      this.sliderOrbitSpeed,
+      this.sliderJuliaRe,
+      this.sliderJuliaIm,
+    ]) {
       updateProgress(slider);
       slider.addEventListener('input', () => updateProgress(slider));
     }
@@ -272,15 +408,46 @@ export class HudController {
     this.syncControls();
   }
 
+  public toggleJuliaOrbitMode(): void {
+    if (!this.activeFractal.hasJuliaParam) return;
+    this.julia.animateOrbit = !this.julia.animateOrbit;
+    this.julia.transition = null;
+    if (this.julia.animateOrbit) {
+      this.julia.orbitAngle = Math.atan2(this.julia.im, this.julia.re);
+    }
+    this.syncControls();
+  }
+
   public resetCamera(): void {
-    const current =
-      FRACTAL_REGISTRY.find((f) => f.id === this.selectFractal.value) ?? FRACTAL_REGISTRY[0];
-    this.camera.flyTo(current.defaultCenter[0], current.defaultCenter[1], current.defaultZoom, 0.9);
+    this.camera.flyTo(
+      this.activeFractal.defaultCenter[0],
+      this.activeFractal.defaultCenter[1],
+      this.activeFractal.defaultZoom,
+      0.9,
+    );
   }
 
   public toggleFullHud(): void {
     const hidden = document.body.classList.toggle('hud-hidden');
     this.hudHiddenHint.hidden = !hidden;
+  }
+
+  private syncJuliaReadouts(): void {
+    const clampedRe = Math.max(-1.5, Math.min(1.5, this.julia.re));
+    const clampedIm = Math.max(-1.5, Math.min(1.5, this.julia.im));
+    this.sliderJuliaRe.value = String(clampedRe);
+    this.sliderJuliaIm.value = String(clampedIm);
+    this.outJuliaRe.textContent = `${this.julia.re >= 0 ? '+' : ''}${this.julia.re.toFixed(4)}`;
+    this.outJuliaIm.textContent = `${this.julia.im >= 0 ? '+' : ''}${this.julia.im.toFixed(4)}`;
+    this.juliaCReadout.textContent = formatComplexCompact(this.julia.re, this.julia.im);
+
+    this.juliaPresetButtons.forEach((btn, idx) => {
+      const p = JULIA_PRESETS[idx];
+      const near =
+        !this.julia.animateOrbit &&
+        Math.hypot(this.julia.re - p.re, this.julia.im - p.im) < 0.002;
+      btn.classList.toggle('active', near);
+    });
   }
 
   public syncControls(): void {
@@ -292,8 +459,22 @@ export class HudController {
     this.sliderDensity.value = String(this.gradient.density);
     this.outDensity.textContent = `${this.gradient.density.toFixed(2)}×`;
 
+    const isJulia = this.activeFractal.hasJuliaParam;
+    this.sectionJulia.hidden = !isJulia;
+    this.btnJuliaFromCenter.hidden = isJulia;
+    this.toggleJuliaOrbit.checked = this.julia.animateOrbit;
+    this.groupOrbitSpeed.hidden = !this.julia.animateOrbit;
+    this.sliderOrbitSpeed.value = String(this.julia.orbitSpeed);
+    this.outOrbitSpeed.textContent = `${this.julia.orbitSpeed.toFixed(2)} rad/s`;
+    if (isJulia) {
+      this.syncJuliaReadouts();
+    }
+
     this.paletteButtons.forEach((btn, idx) => {
-      btn.classList.toggle('active', !this.gradient.livingMorph && idx === this.gradient.paletteIndex);
+      btn.classList.toggle(
+        'active',
+        !this.gradient.livingMorph && idx === this.gradient.paletteIndex,
+      );
     });
   }
 
@@ -302,7 +483,6 @@ export class HudController {
     telemetry: RenderTelemetry,
     evaluatedGradient: EvaluatedGradient,
   ): void {
-    // Update the live gradient preview smoothly (~30Hz) without layout thrash
     if (now - this.lastUiTick < 50) return;
     this.lastUiTick = now;
 
@@ -330,6 +510,10 @@ export class HudController {
     this.coordRe.textContent = formatCoord(this.camera.centerX, this.camera.zoom);
     this.coordIm.textContent = formatCoord(this.camera.centerY, this.camera.zoom);
     this.gpuName.textContent = telemetry.gpuName;
+
+    if (this.activeFractal.hasJuliaParam && (this.julia.animateOrbit || this.julia.transition)) {
+      this.syncJuliaReadouts();
+    }
 
     // Live gradient preview strip & active palette title
     this.gradientPreviewBar.style.background = buildLivePreviewCss(this.gradient, evaluatedGradient);

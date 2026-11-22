@@ -3,7 +3,7 @@
 struct ComputeUniforms {
   // Viewport center in df64: (cx_hi, cx_lo, cy_hi, cy_lo)
   center: vec4<f32>,
-  // Complex step per pixel in df64: (step_hi, step_lo, bailout2, reserved)
+  // Complex step per pixel in df64: (step_hi, step_lo, bailout2, df_one)
   scale: vec4<f32>,
   // (width, height, jitter_x, jitter_y)
   viewport: vec4<f32>,
@@ -11,6 +11,8 @@ struct ComputeUniforms {
   iter_params: vec4<u32>,
   // (use_df64, is_first_chunk, active_stride, reserved)
   mode_params: vec4<u32>,
+  // Julia parameter c in df64: (c_re_hi, c_re_lo, c_im_hi, c_im_lo)
+  julia_c: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u_comp: ComputeUniforms;
